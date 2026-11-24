@@ -8,6 +8,8 @@
 #include <esp_random.h>
 #include <esp_system.h>
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <cJSON.h>
 #include <cstring>
 #include <ctime>
@@ -20,6 +22,10 @@ namespace xiaozhi {
 namespace {
 
 constexpr int kHttpTimeoutMs = 10000;
+// OTA 偶发 TLS 验签失败(-149):同一请求稍后重试即可成功。只在传输层错误时
+// 做有界重试;HTTP 非 200 / 解析错误 / activation 响应不重试,保持原有语义。
+constexpr int kOtaAttempts = 3;      // 首次 + 2 次重试
+constexpr int kOtaRetryDelayMs = 1500;
 constexpr size_t kRespCap = 1024;   // 官方 OTA 响应实测约 500 字节
 constexpr const char *kDefaultOtaUrl = "https://api.tenclass.net/xiaozhi/ota/";
 
@@ -156,28 +162,41 @@ OtaOutcome ota_fetch_config() {
     cfg.buffer_size = 1024;
     cfg.buffer_size_tx = 1024;
 
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (client == nullptr) {
-        out.result = OtaResult::NetworkError;
-        out.detail = "http client init failed";
-        return out;
-    }
+    esp_err_t err = ESP_FAIL;
+    for (int attempt = 1; attempt <= kOtaAttempts; ++attempt) {
+        s_last_http_status = 0;
+        resp.len = 0;
+        resp.data[0] = '\0';
 
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_header(client, "Device-Id", mac.c_str());
-    esp_http_client_set_header(client, "Client-Id", client_id.c_str());
-    esp_http_client_set_post_field(client, body.c_str(), (int)body.size());
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        if (client == nullptr) {
+            out.result = OtaResult::NetworkError;
+            out.detail = "http client init failed";
+            return out;
+        }
 
-    esp_err_t err = esp_http_client_perform(client);
-    s_last_http_status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+        esp_http_client_set_header(client, "Device-Id", mac.c_str());
+        esp_http_client_set_header(client, "Client-Id", client_id.c_str());
+        esp_http_client_set_post_field(client, body.c_str(), (int)body.size());
 
-    if (err != ESP_OK) {
+        err = esp_http_client_perform(client);
+        s_last_http_status = esp_http_client_get_status_code(client);
+        esp_http_client_cleanup(client);
+
+        if (err == ESP_OK) break;
+
         out.result = OtaResult::NetworkError;
         out.detail = std::string(esp_err_to_name(err)) + " (http " +
                      std::to_string(s_last_http_status) + ")";
-        ESP_LOGW(TAG, "OTA request failed: %s", out.detail.c_str());
-        return out;
+        if (attempt < kOtaAttempts) {
+            ESP_LOGW(TAG, "OTA attempt %d/%d failed: %s; retrying in %d ms",
+                     attempt, kOtaAttempts, out.detail.c_str(), kOtaRetryDelayMs);
+            vTaskDelay(pdMS_TO_TICKS(kOtaRetryDelayMs));
+        } else {
+            ESP_LOGW(TAG, "OTA request failed: %s", out.detail.c_str());
+            return out;
+        }
     }
     if (s_last_http_status != 200) {
         out.result = OtaResult::NetworkError;
