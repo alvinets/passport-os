@@ -57,7 +57,7 @@ FoloToy AI Passport 社区固件 · ESP32-C3 · 8 MB Flash · 13 款功能与应
 | 网易云音乐 | 搜索歌曲、播放歌单与每日推荐 | Wi-Fi、自己的网易云账号及可用接口 |
 | 备忘提醒 | 创建提醒、重复提醒、到时响铃与延后 | 可离线使用；按设备当前时间触发 |
 | 清单 | 查看、勾选和管理待办事项 | 可离线使用 |
-| Muse | 语音发送给 Muse，在屏幕上阅读回复 | 手机配对、自己的账号与可用网络 |
+| WorkBuddy | 语音发送给 WorkBuddy，在屏幕上阅读回复 | HTTPS 中继、设备令牌与可用网络 |
 | 你在狗叫什么 | 用声音参与一局小游戏 | 可离线使用 |
 | 声音跳一跳 | 长声跳远、短声跳近，停声就跳 | 可离线使用 |
 | 俄罗斯方块 | 熟悉的堆叠、消行，再来一局 | 可离线使用 |
@@ -102,7 +102,7 @@ FoloToy AI Passport 社区固件 · ESP32-C3 · 8 MB Flash · 13 款功能与应
 3. 按页面提示选择 Wi-Fi、设置城市和个人资料；头像与名片按需添加。
 4. 完成设置后返回首页，开始使用。
 
-小智和 Muse 需要使用者自己的服务配置；Muse 使用代理时，填写代理主机的局域网 IP 和 HTTP 端口。AI 随身语音还需要运行上方关联项目中的 Windows 程序。
+小智和 WorkBuddy 需要使用者自己的服务配置；WorkBuddy 使用代理时，填写代理主机的局域网 IP 和 HTTP 端口。AI 随身语音还需要运行上方关联项目中的 Windows 程序。
 
 </details>
 
@@ -122,7 +122,7 @@ FoloToy AI Passport 社区固件 · ESP32-C3 · 8 MB Flash · 13 款功能与应
 | 通用界面与字体资源 | [`main/ui/`](main/ui/) · [`main/fonts/`](main/fonts/) |
 | 按键、显示、音频、电池等板级驱动 | [`components/bsp/`](components/bsp/) |
 | Wi-Fi 配网与连接管理 | [`components/esp-wifi-connect/`](components/esp-wifi-connect/) |
-| Muse 接入与协议适配 | [`components/passport_muse/`](components/passport_muse/) |
+| WorkBuddy 接入与协议适配 | [`components/passport_workbuddy/`](components/passport_workbuddy/) · [`tools/workbuddy_relay.py`](tools/workbuddy_relay.py) |
 | 主机测试与构建工具 | [`tests/`](tests/) · [`tools/`](tools/) |
 
 ### 编译第一版
@@ -180,7 +180,7 @@ python3 tools/package_firmware.py --date YYYY-MM-DD --verification /path/to/veri
 
 ## 许可与致谢
 
-项目主体采用 [MIT 许可证](LICENSE)。Muse、Noise 协议和其他第三方内容遵循各自目录中的 `LICENSE`、`NOTICE` 及资源说明；Jollybot 形象的使用边界见 [单独声明](main/apps/muse/JOLLYBOT-NOTICE.md)。
+项目主体采用 [MIT 许可证](LICENSE)。WorkBuddy 中继为本项目实现；保留的 Muse HTTP CONNECT 传输、Noise 协议和其他第三方内容遵循各自目录中的 `LICENSE`、`NOTICE` 及资源说明；Jollybot 形象的使用边界见 [单独声明](main/apps/muse/JOLLYBOT-NOTICE.md)。
 
 感谢 FoloToy 的硬件与上游项目，也感谢所有分享想法、反馈问题和参与改进的朋友。
 

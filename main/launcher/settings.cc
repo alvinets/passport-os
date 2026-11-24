@@ -37,7 +37,7 @@ constexpr size_t kRowCount = 9;
 uint8_t s_volume = 80;
 uint8_t s_brightness = 80;
 uint16_t s_timeout = 60;
-ui_theme_t s_theme = UI_THEME_CLASSIC;
+ui_theme_t s_theme = UI_THEME_PHOTO;
 size_t s_selected = 0;
 bool s_volume_editing = false;
 lv_obj_t *s_screen;
@@ -208,7 +208,7 @@ void create_ui() {
     lv_obj_remove_flag(s_confirm, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_pos(s_confirm, 12, 42);lv_obj_set_size(s_confirm, 216, 220);
     auto *question = ui_pixel_label(s_confirm, "恢复默认设置？", &ui_font_20, UI_DANGER);
     lv_obj_set_pos(question, 0, 0);lv_obj_set_width(question, 216);
-    auto *consequence = ui_pixel_label(s_confirm, "音量、亮度设为 80%\n60 秒自动熄屏\n主题恢复经典绿\n按键音效开启\nWi-Fi 与个人资料保留\n上下键取消", &buddy_font_16, UI_TEXT);
+    auto *consequence = ui_pixel_label(s_confirm, "音量、亮度设为 80%\n60 秒自动熄屏\n主题恢复彩色人像\n按键音效开启\nWi-Fi 与个人资料保留\n上下键取消", &buddy_font_16, UI_TEXT);
     lv_obj_set_pos(consequence, 0, 54);lv_obj_set_width(consequence, 216);
     lv_obj_set_style_text_line_space(consequence, 5, 0);
 
@@ -324,7 +324,7 @@ void settings_on_key(uint8_t btn, app_btn_event_t event, uint16_t) {
                 s_volume = 80;
                 s_brightness = 80;
                 s_timeout = 60;
-                s_theme = UI_THEME_CLASSIC;
+                s_theme = UI_THEME_PHOTO;
                 ui_sfx_set_enabled(true);
                 rebuild = true;
                 break;
@@ -367,19 +367,38 @@ void settings_tick(void) {
 }
 
 void settings_bootstrap(void) {
+    bool theme_migrate = false;
     nvs_handle_t handle;
     if (nvs_open(kNvsNamespace, NVS_READONLY, &handle) == ESP_OK) {
         nvs_get_u8(handle, "volume", &s_volume);
         nvs_get_u8(handle, "brightness", &s_brightness);
         nvs_get_u16(handle, "timeout", &s_timeout);
-        uint8_t theme = static_cast<uint8_t>(UI_THEME_CLASSIC);
+        uint8_t theme = static_cast<uint8_t>(UI_THEME_PHOTO);
         uint8_t key_sound = 1;
         if (nvs_get_u8(handle, "key_sound", &key_sound) == ESP_OK)
             ui_sfx_set_enabled(key_sound != 0);
         if (nvs_get_u8(handle, "theme", &theme) == ESP_OK && theme < UI_THEME_COUNT) {
             s_theme = static_cast<ui_theme_t>(theme);
         }
+        // 彩色人像主题加入前,老设备存的是经典绿(0)。一次性把它升级为新默认外观;
+        // 之后用户再主动选经典绿会写入 theme_schema>=2,不会被重新覆盖。
+        uint8_t schema = 0;
+        if (nvs_get_u8(handle, "theme_schema", &schema) != ESP_OK || schema < 2) {
+            if (s_theme == UI_THEME_CLASSIC) {
+                s_theme = UI_THEME_PHOTO;
+                theme_migrate = true;
+            }
+        }
         nvs_close(handle);
+    }
+    if (theme_migrate) {
+        nvs_handle_t write;
+        if (nvs_open(kNvsNamespace, NVS_READWRITE, &write) == ESP_OK) {
+            nvs_set_u8(write, "theme", static_cast<uint8_t>(s_theme));
+            nvs_set_u8(write, "theme_schema", 2);
+            nvs_commit(write);
+            nvs_close(write);
+        }
     }
     if (s_volume > 100) s_volume = 80;
     if (s_brightness < 10 || s_brightness > 100) s_brightness = 80;
@@ -418,6 +437,15 @@ bool settings_save_brightness(uint8_t percent) {
     s_outdoor_until_us = 0;
     s_outdoor_restore = percent;
     bsp_display_set_master_brightness(battery_brightness(bsp_battery_soc(), percent));
+    return true;
+}
+bool settings_save_theme(uint8_t theme) {
+    if (theme >= UI_THEME_COUNT) return false;
+    // theme_schema>=2 标记「用户已经历过彩色人像默认值」,避免下次启动被迁移重置。
+    if (!save_percent("theme", theme)) return false;
+    save_percent("theme_schema", 2);
+    s_theme = static_cast<ui_theme_t>(theme);
+    ui_theme_set(s_theme);
     return true;
 }
 void settings_set_volume(uint8_t percent) {

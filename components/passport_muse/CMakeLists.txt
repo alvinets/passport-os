@@ -1,18 +1,18 @@
+# Only the generic HTTP CONNECT transport is retained from the Muse port.
+# WorkBuddy pairing/authentication/chat live in components/passport_workbuddy.
+# ESP-IDF 6.x folds esp_crt_bundle into mbedtls; 5.5.x has it as its own
+# component. Keep both toolchains buildable without changing the TLS setup.
+if(IDF_VERSION_MAJOR GREATER_EQUAL 6)
+    set(PASSPORT_CRT_COMPONENT mbedtls)
+else()
+    set(PASSPORT_CRT_COMPONENT esp_crt_bundle)
+endif()
 idf_component_register(
-    SRCS "passport_muse.cc" "config_store.c" "compat.c" "voice_helpers.c"
-         "sdk/ble_server.c" "sdk/link_pairing.c" "sdk/muse_pairing_memory.cpp"
-         "sdk/pairing_signer_policy.c" "sdk/pairing_transcript.c"
-         "sdk/vm_api.c" "sdk/noise_control.cpp" "sdk/stack_monitor.c" "sdk/http_proxy.c"
-         "sdk/proxy_route.c"
-         "sdk/muse_chat_link.c" "sdk/muse_tls_memory.cpp"
+    SRCS "config_store.c" "sdk/http_proxy.c" "sdk/proxy_route.c"
     INCLUDE_DIRS "include"
-    PRIV_INCLUDE_DIRS "compat" "sdk" "${CMAKE_CURRENT_BINARY_DIR}"
-    REQUIRES bsp esp-wifi-connect json nvs_flash
-    PRIV_REQUIRES bt esp_wifi esp_timer esp-tls esp_http_client mbedtls
-                  noise_core esp_app_format esp_driver_gpio efuse)
-target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
-target_link_libraries(${COMPONENT_LIB} INTERFACE
-    "-Wl,--wrap=esp_mbedtls_mem_calloc" "-Wl,--wrap=esp_mbedtls_mem_free")
+    PRIV_INCLUDE_DIRS "sdk" "${CMAKE_CURRENT_BINARY_DIR}"
+    REQUIRES nvs_flash esp-tls esp_http_client esp_wifi esp_timer ${PASSPORT_CRT_COMPONENT}
+)
 
 # Every distributed build starts without a maintainer's network configuration.
 # A local device build may opt into a LAN proxy without committing that
@@ -39,7 +39,3 @@ if(NOT MUSE_DEFAULT_PROXY_PORT MATCHES "^[0-9]+$")
     message(FATAL_ERROR "MUSE_DEFAULT_PROXY_PORT must be numeric")
 endif()
 configure_file("sdk/muse_proxy_defaults.h.in" "muse_proxy_defaults.h" @ONLY)
-target_compile_definitions(${COMPONENT_LIB} PRIVATE
-    CONFIG_MUSE_ENABLED=1 CONFIG_HOMEHUB_TUNNEL=0
-    CONFIG_HOMEHUB_SHOW_AGENT_NAME=1 CONFIG_HOMEHUB_DISPLAY_COMMANDS=0
-    CONFIG_HOMEHUB_PAIRING_AUTH_EPOCH=0)

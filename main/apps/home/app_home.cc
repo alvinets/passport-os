@@ -70,14 +70,49 @@ namespace {
 constexpr char kTag[] = "app_home";
 
 // A8 artwork encodes highlights: keep a dark home scene even in the light theme.
-#define kBg (ui_theme_color_on_dark(UI_COLOR_BG))
-#define kPhos (ui_theme_color_on_dark(UI_COLOR_TEXT))
-#define kPhosDim (ui_theme_color_on_dark(UI_COLOR_TEXT_DIM))
-#define kPhosBorder (ui_theme_color_on_dark(UI_COLOR_BORDER))
-#define kClock (ui_theme_get() == UI_THEME_NEON ? UI_ACCENT : ui_theme_get() == UI_THEME_PLAYFUL ? ui_theme_color_on_dark(UI_COLOR_SECONDARY) : kPhos)
-#define kBand (ui_theme_get() == UI_THEME_NEON ? UI_SECONDARY : ui_theme_get() == UI_THEME_PLAYFUL ? ui_theme_color_on_dark(UI_COLOR_SUCCESS) : UI_AMBER)
-#define kTemperature (ui_theme_is_multicolor() ? ui_theme_color_on_dark(UI_COLOR_TERTIARY) : kPhos)
-#define kWeatherAccent (ui_theme_color_on_dark(ui_theme_get() == UI_THEME_NEON ? UI_COLOR_SUCCESS : UI_COLOR_ACCENT))
+// 彩色人像主题(UI_THEME_PHOTO)是浅底彩色首页:人像为照片级 JPEG,文字用调色板本色。
+// 其余主题(经典绿/旅行仪器/像素白/霓虹黑)保持原有像素风外观。
+inline bool home_photo_mode_active() {
+    return ui_theme_get() == UI_THEME_PHOTO;
+}
+// 浅底主题取调色板本色;深色主题取 on-dark 前景变体(与改动前完全一致)。
+inline uint32_t home_role(ui_color_role_t role) {
+    return home_photo_mode_active() ? ui_theme_color(role) : ui_theme_color_on_dark(role);
+}
+inline uint32_t home_bg() { return home_role(UI_COLOR_BG); }
+inline uint32_t home_surface() { return home_role(UI_COLOR_SURFACE); }
+inline uint32_t home_ink() { return home_role(UI_COLOR_TEXT); }
+inline uint32_t home_muted() { return home_role(UI_COLOR_TEXT_DIM); }
+inline uint32_t home_border() { return home_role(UI_COLOR_BORDER); }
+inline uint32_t home_clock_color() {
+    if (home_photo_mode_active()) return ui_theme_color(UI_COLOR_ACCENT);
+    return ui_theme_get() == UI_THEME_NEON ? UI_ACCENT
+         : ui_theme_get() == UI_THEME_PLAYFUL ? ui_theme_color_on_dark(UI_COLOR_SECONDARY)
+         : home_ink();
+}
+inline uint32_t home_band_color() {
+    if (home_photo_mode_active()) return ui_theme_color(UI_COLOR_SUCCESS);
+    return ui_theme_get() == UI_THEME_NEON ? UI_SECONDARY
+         : ui_theme_get() == UI_THEME_PLAYFUL ? ui_theme_color_on_dark(UI_COLOR_SUCCESS)
+         : UI_AMBER;
+}
+inline uint32_t home_temperature_color() {
+    if (home_photo_mode_active()) return ui_theme_color(UI_COLOR_DANGER);
+    return ui_theme_is_multicolor() ? ui_theme_color_on_dark(UI_COLOR_TERTIARY) : home_ink();
+}
+inline uint32_t home_weather_color() {
+    if (home_photo_mode_active()) return ui_theme_color(UI_COLOR_SECONDARY);
+    return ui_theme_color_on_dark(ui_theme_get() == UI_THEME_NEON ? UI_COLOR_SUCCESS : UI_COLOR_ACCENT);
+}
+
+#define kBg home_bg()
+#define kPhos home_ink()
+#define kPhosDim home_muted()
+#define kPhosBorder home_border()
+#define kClock home_clock_color()
+#define kBand home_band_color()
+#define kTemperature home_temperature_color()
+#define kWeatherAccent home_weather_color()
 
 // 兼容既有更新函数的语义色:磷光风格里"强调/在线"都是亮绿,弱化都是暗绿。
 #define kText (kPhos)
@@ -154,6 +189,86 @@ esp_err_t read_portrait(bool present) {
 uint8_t *s_portrait_pixels = nullptr;
 lv_image_dsc_t s_portrait_dsc;
 
+// 彩色人像:96×138 RGB565,由 TJPGD 按 MCU 直接填入,不开 150KB 全屏缓冲。
+// 与像素人像互斥运行,离开首页时一并归还堆。
+uint8_t *s_photo_pixels = nullptr;
+lv_image_dsc_t s_photo_dsc;
+bool s_photo_ready = false;
+
+struct ColorAvatarJpegContext {
+    FILE *fp;
+    bool failed;
+};
+
+std::size_t color_avatar_jpeg_input(JDEC *decoder, uint8_t *buffer, std::size_t requested) {
+    auto *context = static_cast<ColorAvatarJpegContext *>(decoder->device);
+    if (!context || !context->fp) return 0;
+    if (buffer) return std::fread(buffer, 1, requested, context->fp);
+    return std::fseek(context->fp, static_cast<long>(requested), SEEK_CUR) == 0 ? requested : 0;
+}
+
+int color_avatar_jpeg_output(JDEC *decoder, void *bitmap, JRECT *rectangle) {
+    auto *context = static_cast<ColorAvatarJpegContext *>(decoder->device);
+    if (!context || !bitmap || !rectangle || context->failed || !s_photo_pixels) return 0;
+    const uint16_t left = rectangle->left, right = rectangle->right;
+    const uint16_t top = rectangle->top, bottom = rectangle->bottom;
+    if (right >= HOME_AVATAR_COLOR_W || bottom >= HOME_AVATAR_COLOR_H) {
+        context->failed = true;
+        return 0;
+    }
+    // TJPGD 输出 BGR888;LVGL 的 RGB565 是本机字节序(未开 LV_COLOR_16_SWAP),
+    // 因此这里不按屏幕直推路径做 bswap16。
+    const auto *bgr = static_cast<const uint8_t *>(bitmap);
+    for (uint16_t y = top; y <= bottom; ++y) {
+        auto *row = reinterpret_cast<uint16_t *>(s_photo_pixels) +
+            static_cast<std::size_t>(y) * HOME_AVATAR_COLOR_W;
+        for (uint16_t x = left; x <= right; ++x) {
+            const std::size_t src = (static_cast<std::size_t>(y - top) * (right - left + 1) + (x - left)) * 3U;
+            row[x] = static_cast<uint16_t>(((bgr[src + 2] & 0xf8U) << 8U) |
+                                           ((bgr[src + 1] & 0xfcU) << 3U) |
+                                           (bgr[src] >> 3U));
+        }
+    }
+    return 1;
+}
+
+esp_err_t read_color_avatar() {
+    s_photo_ready = false;
+    if (!home_profile_has_avatar_color()) return ESP_FAIL;
+    const std::size_t pixels = static_cast<std::size_t>(HOME_AVATAR_COLOR_W) * HOME_AVATAR_COLOR_H;
+    if (!s_photo_pixels)
+        s_photo_pixels = static_cast<uint8_t *>(std::malloc(pixels * sizeof(uint16_t)));
+    if (!s_photo_pixels) return ESP_ERR_NO_MEM;
+    // 描述符在建屏时就把 data 指向当时的 s_photo_pixels(通常为 nullptr),
+    // 这里缓冲才真正分配,必须把指针同步回描述符,否则 LVGL 取到 NULL 源。
+    s_photo_dsc.data = s_photo_pixels;
+    auto *work = static_cast<uint8_t *>(std::malloc(4096));
+    if (!work) return ESP_ERR_NO_MEM;
+    FILE *fp = std::fopen(home_profile_avatar_color_path(), "rb");
+    if (!fp) {
+        std::free(work);
+        return ESP_ERR_NOT_FOUND;
+    }
+    ColorAvatarJpegContext context = {fp, false};
+    JDEC decoder;
+    JRESULT res = jd_prepare(&decoder, color_avatar_jpeg_input, work, 4096, &context);
+    if (res == JDR_OK &&
+        (decoder.width != HOME_AVATAR_COLOR_W || decoder.height != HOME_AVATAR_COLOR_H))
+        res = JDR_FMT1;
+    if (res == JDR_OK) res = jd_decomp(&decoder, color_avatar_jpeg_output, 0);
+    std::fclose(fp);
+    std::free(work);
+    if (res != JDR_OK || context.failed) {
+        ESP_LOGW(kTag, "Color avatar decode failed: %d", (int)res);
+        return ESP_FAIL;
+    }
+    s_photo_ready = true;
+    ESP_LOGI(kTag, "Color avatar decoded: %ux%u free=%u",
+             (unsigned)HOME_AVATAR_COLOR_W, (unsigned)HOME_AVATAR_COLOR_H,
+             (unsigned)esp_get_free_heap_size());
+    return ESP_OK;
+}
+
 std::atomic<bool> s_home_active{false};
 // 界面存活开关:home_task 每轮持锁刷新前检查,stop() 删屏前置 false。
 // 解决"stop 超时后任务仍活着却去写已删除 label"这一类的 use-after-free。
@@ -223,6 +338,14 @@ void expand_portrait(void) {
 
 // 无头像时显示占位文字(磷光风格不用彩色吉祥物)。
 void apply_avatar(bool have_image) {
+    // 彩色照片优先;文件损坏/尚未上传时自动回落到原来的四阶调像素人像。
+    if (home_photo_mode_active() && s_photo_ready) {
+        lv_obj_set_style_image_recolor_opa(s_avatar_img, LV_OPA_TRANSP, 0);
+        lv_image_set_src(s_avatar_img, &s_photo_dsc);
+        lv_obj_clear_flag(s_avatar_img, LV_OBJ_FLAG_HIDDEN);
+        if (s_portrait_ph) lv_obj_add_flag(s_portrait_ph, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
     have_image = have_image && s_portrait_packed;
     const bool legacy = have_image && s_portrait_packed[4] == 0;
     const size_t bytes = legacy ? HOME_PORTRAIT_PIXELS : HOME_PORTRAIT_I4_BYTES;
@@ -306,10 +429,10 @@ void draw_weather_icon_event(lv_event_t *event) {
             ink.box(dots[i][0], dots[i][1], 3, 3, i == s_spin_phase ? kPhos : kPhosDim);
         return;
     }
-    const uint32_t sun = ui_theme_is_multicolor()
-        ? ui_theme_color_on_dark(UI_COLOR_WARNING) : kPhos;
-    const uint32_t water = ui_theme_is_multicolor()
-        ? ui_theme_color_on_dark(UI_COLOR_SECONDARY) : kPhos;
+    const uint32_t sun = home_photo_mode_active() ? ui_theme_color(UI_COLOR_WARNING)
+        : ui_theme_is_multicolor() ? ui_theme_color_on_dark(UI_COLOR_WARNING) : kPhos;
+    const uint32_t water = home_photo_mode_active() ? ui_theme_color(UI_COLOR_TERTIARY)
+        : ui_theme_is_multicolor() ? ui_theme_color_on_dark(UI_COLOR_SECONDARY) : kPhos;
     const uint16_t code = s_wicon_code;
     if (code == 0) {
         // Open solar disc with eight short, balanced rays.
@@ -673,7 +796,7 @@ lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color,
 void draw_passport_details(lv_event_t *event) {
     pixel_scene::Ink ink(event);
     // Open portrait and perforated seam replace retained decoration objects.
-    const uint32_t surface = ui_theme_color_on_dark(UI_COLOR_SURFACE);
+    const uint32_t surface = home_surface();
     ink.box(116, 32, 118, 93, surface);
     ink.box(116, 128, 118, 108, surface);
     // 9x12 outlined map pin: stepped crown, open center and tapered tip.
@@ -705,7 +828,7 @@ void create_ui() {
 
     // ---- 状态栏 (y0..24):Wi-Fi 信号 + 电池,回到最顶部 ----
     lv_obj_t *top = ui_pixel_top_bar(s_screen);
-    if (ui_theme_get() == UI_THEME_PLAYFUL) {
+    if (home_photo_mode_active() || ui_theme_get() == UI_THEME_PLAYFUL) {
         ui_pixel_bg_color(top, kBg);
         lv_obj_set_style_border_color(top, lv_color_hex(kPhosBorder), 0);
     }
@@ -1061,8 +1184,11 @@ void home_task(void *arg) {
             if (std::strcmp(previous_lat, prof.lat) || std::strcmp(previous_lon, prof.lon))
                 s_force_weather.store(true);
             const bool has = home_profile_has_avatar();
+            // 彩色人像优先解码;只有它不可用时才分配 14.4KB 的像素缓冲,
+            // 避免两种人像同时常驻堆(ESP32-C3 无 PSRAM)。
+            const bool photo_ok = home_photo_mode_active() && read_color_avatar() == ESP_OK;
             esp_err_t err = ESP_FAIL;
-            if (has) err = read_portrait(true);
+            if (!photo_ok && has) err = read_portrait(true);
             if (bsp_lvgl_lock(1000)) {
                 if (s_ui_alive.load()) {
                     apply_profile(&prof);
@@ -1153,6 +1279,16 @@ void home_init() {
     s_portrait_dsc.data_size = HOME_PORTRAIT_I4_BYTES;
     s_portrait_dsc.data = s_portrait_pixels;
 
+    s_photo_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    s_photo_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+    s_photo_dsc.header.flags = 0;
+    s_photo_dsc.header.w = HOME_AVATAR_COLOR_W;
+    s_photo_dsc.header.h = HOME_AVATAR_COLOR_H;
+    s_photo_dsc.header.stride = HOME_AVATAR_COLOR_W * sizeof(uint16_t);
+    s_photo_dsc.data_size = static_cast<uint32_t>(
+        static_cast<std::size_t>(HOME_AVATAR_COLOR_W) * HOME_AVATAR_COLOR_H * sizeof(uint16_t));
+    s_photo_dsc.data = s_photo_pixels;
+
     // 内置底图(A8,数据在 flash,零 RAM 占用)
     const uint8_t *band_data[2] = {kBandArtCity, kBandArtMountain};
     for (int i = 0; i < 2; ++i) {
@@ -1183,8 +1319,8 @@ void home_start() {
     home_profile_t prof;
     home_profile_get(&prof);
     const bool has_avatar = home_profile_has_avatar();
-    const esp_err_t avatar_err =
-        read_portrait(has_avatar);
+    const bool photo_ok = home_photo_mode_active() && read_color_avatar() == ESP_OK;
+    const esp_err_t avatar_err = photo_ok ? ESP_FAIL : read_portrait(has_avatar);
 
     bsp_lvgl_lock(-1);
     if (!s_screen) create_ui();
@@ -1268,6 +1404,7 @@ void home_stop() {
         s_share_visible = false;
     }
     lv_image_cache_drop(&s_portrait_dsc);
+    lv_image_cache_drop(&s_photo_dsc);
     bsp_lvgl_unlock();
 
     // 屏已删、任务已退,人像缓冲可以还给堆了 —— 其它应用(小智)正等着
@@ -1277,6 +1414,12 @@ void home_stop() {
         s_portrait_pixels = nullptr;
         s_portrait_dsc.data = nullptr;
     }
+    if (s_photo_pixels != nullptr) {
+        free(s_photo_pixels);
+        s_photo_pixels = nullptr;
+        s_photo_dsc.data = nullptr;
+    }
+    s_photo_ready = false;
 
     free(s_portrait_packed);
     s_portrait_packed = nullptr;

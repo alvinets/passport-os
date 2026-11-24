@@ -198,7 +198,7 @@ constexpr IconGlyph kIconGlyphs[] = {
         ".................",
         ".................",
     }},
-    {APP_ID_MUSE, {  // chat bubble with sparkle
+    {APP_ID_WORKBUDDY, {  // chat bubble with sparkle
         ".................",
         "..............#..",
         ".............###.",

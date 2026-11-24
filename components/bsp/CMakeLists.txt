@@ -8,5 +8,5 @@ idf_component_register(
          "src/bsp_memory.c"
          "src/bsp_battery.c"
     INCLUDE_DIRS "include"
-    REQUIRES driver esp_driver_i2c esp_driver_i2s esp_lcd esp_lvgl_port button esp_adc esp_codec_dev esp_timer
+    REQUIRES driver esp_driver_i2c esp_driver_i2s esp_driver_ledc esp_lcd esp_lvgl_port button esp_adc esp_codec_dev esp_timer
 )

@@ -211,6 +211,31 @@ def check_sensitive_content(files: list[Path], errors: list[str]) -> None:
                 errors.append(f"{path.relative_to(ROOT)}: possible unsanitized device QR link")
 
 
+def check_phone_setup_dom(errors: list[str]) -> None:
+    """Ensure the setup page never loses elements referenced by its script.
+
+    A missing element throws before load() enables the Wi-Fi connect button,
+    leaving the page stuck on "reading device status" with no visible error.
+    """
+    path = ROOT / "main" / "apps" / "home" / "phone_setup.html"
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"cannot read {path.name}: {exc}")
+        return
+    html, _, script = source.partition("<script>")
+    if not script:
+        errors.append(f"{path.name}: missing <script> block")
+        return
+    declared = set(re.findall(r'id="([^"]+)"', html))
+    referenced = set(re.findall(r"\$\('([^']+)'\)", script))
+    referenced |= set(re.findall(r"getElementById\('([^']+)'\)", script))
+    referenced |= set(re.findall(r"\bsay\('([^']+)'", script))
+    missing = sorted(referenced - declared)
+    if missing:
+        errors.append(f"{path.name}: script references missing element id(s): {', '.join(missing)}")
+
+
 def check_conflict_markers(files: list[Path], errors: list[str]) -> None:
     marker = re.compile(r"(?m)^(<<<<<<< |=======\s*$|>>>>>>> )")
     for path in files:
@@ -240,6 +265,7 @@ def main() -> int:
         check_issue_forms(errors)
     check_sensitive_content(files, errors)
     check_conflict_markers(files, errors)
+    check_phone_setup_dom(errors)
 
     if errors:
         for error in errors:

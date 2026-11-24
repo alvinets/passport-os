@@ -57,11 +57,20 @@ static int home_profile_write_avatar_chunk(const uint8_t*,size_t n,bool first,bo
  if(last){assert(written==total);committed=true;}
  return ESP_OK;
 }
+static size_t color_written;
+static bool color_committed;
+static void home_profile_abort_avatar_color_upload(){++aborts;color_written=0;}
+static int home_profile_write_avatar_color_chunk(const uint8_t*,size_t n,bool first,bool last){
+ if(fail_store)return ESP_ERR_NO_MEM;
+ if(first)color_written=0;color_written+=n;
+ if(last){assert(color_written<=HOME_AVATAR_COLOR_MAX_BYTES);color_committed=true;}
+ return ESP_OK;
+}
 '''
 cases = r'''
 static void reset(std::vector<int> input={}){
- events=input;status=aborts=reads=0;now=0;consumed=written=0;
- response.clear();committed=false;fail_store=false;authorized=true;
+ events=input;status=aborts=reads=0;now=0;consumed=written=color_written=0;
+ response.clear();committed=color_committed=false;fail_store=false;authorized=true;
 }
 int main(){
  for(int size:{HOME_AVATAR_BYTES,HOME_AVATAR_V2_BYTES,HOME_AVATAR_LEGACY_BYTES}){
@@ -80,6 +89,17 @@ int main(){
  reset();req.content_len=5000;handler_avatar_post(&req);assert(status==400&&reads==0);
  reset();authorized=false;req.content_len=HOME_AVATAR_BYTES;handler_avatar_post(&req);assert(status==401&&reads==0);
  std::cout<<"Avatar HTTP: legacy/current sizes, bad size/auth, disconnect, deadline and storage failure: PASS\n";
+ httpd_req_t color_req{HOME_AVATAR_COLOR_MAX_BYTES/2};
+ reset({1,7,128});handler_avatar_color_post(&color_req);
+ assert(status==200&&color_committed&&consumed==color_req.content_len);
+ reset({128,HTTPD_SOCK_ERR_TIMEOUT,HTTPD_SOCK_ERR_TIMEOUT});handler_avatar_color_post(&color_req);
+ assert(status==400&&!color_committed&&aborts==1);
+ reset();fail_store=true;handler_avatar_color_post(&color_req);assert(status==400&&!color_committed);
+ reset();color_req.content_len=HOME_AVATAR_COLOR_MAX_BYTES+1;handler_avatar_color_post(&color_req);
+ assert(status==400&&reads==0);
+ reset();authorized=false;color_req.content_len=100;handler_avatar_color_post(&color_req);
+ assert(status==401&&reads==0);
+ std::cout<<"Color avatar HTTP: fragmented upload, timeout, storage/size/auth rejection: PASS\n";
 }
 '''.replace('BASELINE', 'true' if baseline else 'false')
 with tempfile.TemporaryDirectory(prefix='passport-avatar-http-') as directory:

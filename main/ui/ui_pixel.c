@@ -28,11 +28,24 @@ static const uint32_t s_palettes[UI_THEME_COUNT][UI_COLOR_COUNT] = {
         0xA4AFC0, 0x38E8E1, 0xFF747D, 0x10131A, 0xAAEE6D, 0xFFD45A,
         0xFF78CA, 0xFFB75E,
     },
+    /* 彩色人像:与首页照片方案同一套色值,浅底深字,强调色取钟表蓝/气温红/天气蓝。 */
+    [UI_THEME_PHOTO] = {
+        0xF5F7F6, 0xFFFFFF, 0xE8EFEC, 0xD7E1DD, 0x252D30,
+        0x5F6E72, 0x24405C, 0xC4472E, 0xFFFFFF, 0x5E9C7A, 0xE5A23C,
+        0x2E6E9E, 0x4A90C2,
+    },
 };
 
 static const uint32_t s_playful_dark[UI_COLOR_COUNT] = {
     0x181B1C, 0x202725, 0x2D3935, 0x53605D, 0xE9EDEB,
     0xAFBDB7, 0xF58FAA, 0xFF968A, 0x181B1C, 0x8DDFC5, 0xFFD37D,
+    0x86C9FF, 0xFFAD78,
+};
+
+/* 浅底彩色人像主题同样需要一套深色前景,给 A8 底图/其他应用复用。 */
+static const uint32_t s_photo_dark[UI_COLOR_COUNT] = {
+    0x141A1C, 0x1B2326, 0x263134, 0x4E5D62, 0xE9EDEC,
+    0xA9B6B8, 0x8FB6D6, 0xFF968A, 0x141A1C, 0x8DDFC5, 0xFFD37D,
     0x86C9FF, 0xFFAD78,
 };
 
@@ -55,7 +68,9 @@ uint32_t ui_theme_color(ui_color_role_t role)
 uint32_t ui_theme_color_on_dark(ui_color_role_t role)
 {
     if ((unsigned)role >= UI_COLOR_COUNT) role = UI_COLOR_TEXT;
-    return s_ui_theme == UI_THEME_PLAYFUL ? s_playful_dark[role] : ui_theme_color(role);
+    if (s_ui_theme == UI_THEME_PLAYFUL) return s_playful_dark[role];
+    if (s_ui_theme == UI_THEME_PHOTO) return s_photo_dark[role];
+    return ui_theme_color(role);
 }
 uint32_t ui_theme_portrait_color(uint8_t level)
 {
@@ -76,6 +91,7 @@ uint32_t ui_theme_portrait_subject_color(uint8_t level)
         {0x484D43, 0x797D69, 0xB6B7A0, 0xEEE7D6},
         {0x374543, 0x637771, 0xADBFB1, 0xF1EEE6},
         {0x343C55, 0x657593, 0xB3C5D8, 0xF4F4F6},
+        {0x3A4750, 0x6B7F8A, 0xB6C4CC, 0xF1EEE6},
     };
     return colors[s_ui_theme][level > 3 ? 3 : level];
 }
@@ -85,6 +101,7 @@ const char *ui_theme_name(ui_theme_t theme)
         case UI_THEME_TRAVEL: return "旅行仪器";
         case UI_THEME_PLAYFUL: return "像素白";
         case UI_THEME_NEON: return "霓虹黑";
+        case UI_THEME_PHOTO: return "彩色人像";
         default: return "经典绿";
     }
 }

@@ -127,6 +127,16 @@ python3 tests/test_voice_startup.py
     tests/test_muse_proxy_route.c components/passport_muse/sdk/proxy_route.c -o "$test_dir/muse-proxy-route"
 "$test_dir/muse-proxy-route"
 "$test_dir/muse-voice"
+python3 tests/test_workbuddy_relay.py
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+    -Itests/home_mocks -Itests/radio_mocks -Icomponents/passport_workbuddy/include \
+    -Icomponents/passport_workbuddy \
+    tests/test_workbuddy_config.c components/passport_workbuddy/config_store.c -o "$test_dir/workbuddy-config"
+"$test_dir/workbuddy-config"
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
+    -Icomponents/passport_workbuddy/include \
+    tests/test_workbuddy_text.c components/passport_workbuddy/text.c -o "$test_dir/workbuddy-text"
+"$test_dir/workbuddy-text"
 "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
     tests/test_sound_jump.c main/apps/sound_jump/jump_core.c main/apps/sound_jump/jump_voice.c -o "$test_dir/sound-jump"
 "$test_dir/sound-jump"

@@ -1,8 +1,13 @@
-option(PASSPORT_MUSE_USE_JOLLYBOT "Build Muse with the official Jollybot artwork" ON)
-if(PASSPORT_MUSE_USE_JOLLYBOT)
-    set(PASSPORT_MUSE_AVATAR "apps/muse/muse_avatar_frames.c")
+option(PASSPORT_WORKBUDDY_USE_JOLLYBOT "Use the official Jollybot artwork (not used by WorkBuddy)" OFF)
+if(IDF_VERSION_MAJOR GREATER_EQUAL 6)
+    set(PASSPORT_JSON_COMPONENT cjson)
 else()
-    set(PASSPORT_MUSE_AVATAR "apps/muse/muse_avatar_public_frames.c")
+    set(PASSPORT_JSON_COMPONENT json)
+endif()
+if(PASSPORT_WORKBUDDY_USE_JOLLYBOT)
+    set(PASSPORT_WORKBUDDY_AVATAR "apps/muse/muse_avatar_frames.c")
+else()
+    set(PASSPORT_WORKBUDDY_AVATAR "apps/muse/muse_avatar_public_frames.c")
 endif()
 idf_component_register(
     EMBED_FILES "apps/home/cities.json.gz"
@@ -93,8 +98,8 @@ idf_component_register(
         "apps/pomodoro/app_pomodoro.cc"
         "apps/pomodoro/pomodoro_font_20.c"
         "apps/pomodoro/pomodoro_digits_48.c"
-        "apps/muse/app_muse.cc"
-        "${PASSPORT_MUSE_AVATAR}"
+        "apps/workbuddy/app_workbuddy.cc"
+        "${PASSPORT_WORKBUDDY_AVATAR}"
         "apps/game/tetris_core.c"
         "apps/game/app_tetris.cc"
     INCLUDE_DIRS
@@ -106,9 +111,11 @@ idf_component_register(
         "apps/xiaozhi"
         "apps/home"
         "apps/game"
+        "apps/workbuddy"
         "ui"
         "fonts"
     REQUIRES
+        passport_workbuddy
         passport_muse
         bsp
         esp-wifi-connect
@@ -116,7 +123,8 @@ idf_component_register(
         nvs_flash
         esp_http_client
         esp_websocket_client
-        json
+        ${PASSPORT_JSON_COMPONENT}
+        esp_ringbuf
         mbedtls
         esp_codec_dev
         esp_audio_codec

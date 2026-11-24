@@ -5,8 +5,9 @@
 #include "esp_log.h"
 #include <esp_random.h>      // esp_fill_random():每次开启上传窗口换一个一次性 token
 #include "wifi_manager.h"
-#include "passport_muse.h"
+#include "passport_workbuddy.h"
 #include "ui/ui_palette.h"
+#include "launcher/settings.h"
 
 #include <cJSON.h>
 #include <cstdio>
@@ -125,6 +126,11 @@ static esp_err_t handler_profile_get(httpd_req_t *req) {
     cJSON_AddStringToObject(root, "radio_city", profile.radio_city);
     cJSON_AddStringToObject(root, "country_code", profile.country_code);
     cJSON_AddBoolToObject(root, "avatar", home_profile_has_avatar());
+    // 头像风格由外观主题决定:彩色人像主题 = 照片级人像,其余主题 = 像素风人像。
+    cJSON_AddNumberToObject(root, "avatar_mode",
+                            ui_theme_get() == UI_THEME_PHOTO ? HOME_AVATAR_MODE_PHOTO
+                                                             : HOME_AVATAR_MODE_PIXEL);
+    cJSON_AddBoolToObject(root, "avatar_color", home_profile_has_avatar_color());
     cJSON *palette = cJSON_AddArrayToObject(root, "portrait_palette");
     for (uint8_t level = 0; level < 4; ++level)
         cJSON_AddItemToArray(palette, cJSON_CreateNumber(ui_theme_portrait_color(level)));
@@ -167,7 +173,18 @@ static esp_err_t handler_profile_post(httpd_req_t *req) {
         std::memcpy(dst, value, std::strlen(value) + 1);
         return true;
     };
-    const bool valid = grab("name", in.name, HOME_NAME_MAX) &&
+    uint8_t avatar_mode = HOME_AVATAR_MODE_DEFAULT;
+    bool mode_valid = true;
+    const cJSON *mode_item = cJSON_GetObjectItemCaseSensitive(root, "avatar_mode");
+    if (mode_item && cJSON_IsNumber(mode_item)) {
+        const double requested = mode_item->valuedouble;
+        if (requested == HOME_AVATAR_MODE_PIXEL) avatar_mode = HOME_AVATAR_MODE_PIXEL;
+        else if (requested == HOME_AVATAR_MODE_PHOTO) avatar_mode = HOME_AVATAR_MODE_PHOTO;
+        else mode_valid = false;
+    }
+    const bool has_mode_field = mode_item != nullptr;
+    const bool valid = mode_valid &&
+        grab("name", in.name, HOME_NAME_MAX) &&
         grab("signature", in.signature, HOME_SIGNATURE_MAX) &&
         grab("city", in.city, HOME_CITY_MAX) &&
         grab("address", in.address, HOME_ADDRESS_MAX) &&
@@ -180,21 +197,31 @@ static esp_err_t handler_profile_post(httpd_req_t *req) {
     if (!valid) return send_json(req, 400, "{\"error\":\"text too long\"}");
 
     esp_err_t err = home_profile_set_text(&in);
+    if (err == ESP_OK) err = home_profile_set_avatar_mode(avatar_mode);
+    // 头像风格与外观主题是同一件事:彩色人像对应 UI_THEME_PHOTO,像素风则离开它。
+    // 只在网页确实带了 avatar_mode 时改主题,避免旧页面/缺字段把用户选好的主题冲掉。
+    if (err == ESP_OK && has_mode_field) {
+        if (avatar_mode == HOME_AVATAR_MODE_PHOTO) {
+            if (ui_theme_get() != UI_THEME_PHOTO) settings_save_theme(UI_THEME_PHOTO);
+        } else if (ui_theme_get() == UI_THEME_PHOTO) {
+            settings_save_theme(UI_THEME_CLASSIC);
+        }
+    }
     return send_json(req, err == ESP_OK ? 200 : 400,
                      err == ESP_OK ? "{\"ok\":true}" : "{\"error\":\"invalid\"}");
 }
 
-static esp_err_t send_muse_config(httpd_req_t *req) {
-    bool token_set = false, paired = false;
-    passport_muse_config_status(&token_set, &paired);
-    char proxy_host[16]; uint16_t proxy_port = 0;
-    passport_muse_proxy_config(proxy_host, sizeof(proxy_host), &proxy_port);
+static esp_err_t send_workbuddy_config(httpd_req_t *req) {
+    bool setup = false;
+    char url[168] = {0}, host[16] = {0};
+    uint16_t port = 0;
+    passport_workbuddy_config_status(&setup, url, sizeof(url), host, sizeof(host), &port);
     cJSON *obj = cJSON_CreateObject();
     cJSON_AddBoolToObject(obj, "ok", true);
-    cJSON_AddBoolToObject(obj, "token_set", token_set);
-    cJSON_AddBoolToObject(obj, "paired", paired);
-    cJSON_AddStringToObject(obj, "proxy_host", proxy_host);
-    cJSON_AddNumberToObject(obj, "proxy_port", proxy_port);
+    cJSON_AddBoolToObject(obj, "setup_complete", setup);
+    cJSON_AddStringToObject(obj, "relay_url", url);
+    cJSON_AddStringToObject(obj, "proxy_host", host);
+    cJSON_AddNumberToObject(obj, "proxy_port", port);
     char *json = cJSON_PrintUnformatted(obj);
     cJSON_Delete(obj);
     if (!json) return send_json(req, 500, "{\"error\":\"no_memory\"}");
@@ -202,13 +229,13 @@ static esp_err_t send_muse_config(httpd_req_t *req) {
     cJSON_free(json);
     return err;
 }
-static esp_err_t handler_muse_get(httpd_req_t *req) {
+static esp_err_t handler_workbuddy_get(httpd_req_t *req) {
     if (!token_ok(req)) return send_json(req, 401, "{\"error\":\"unauthorized\"}");
-    return send_muse_config(req);
+    return send_workbuddy_config(req);
 }
-static esp_err_t handler_muse_post(httpd_req_t *req) {
+static esp_err_t handler_workbuddy_post(httpd_req_t *req) {
     if (!token_ok(req)) return send_json(req, 401, "{\"error\":\"unauthorized\"}");
-    char body[512];
+    char body[640];
     if (req->content_len <= 0 || req->content_len >= sizeof(body)) return send_json(req, 400, "{\"error\":\"bad size\"}");
     int received = 0;
     while (received < req->content_len) {
@@ -218,21 +245,32 @@ static esp_err_t handler_muse_post(httpd_req_t *req) {
     }
     body[received] = 0;
     cJSON *obj = cJSON_Parse(body);
-    const cJSON *token = cJSON_GetObjectItemCaseSensitive(obj, "sdk_token");
-    const cJSON *proxy_host = cJSON_GetObjectItemCaseSensitive(obj, "proxy_host");
-    const cJSON *proxy_port = cJSON_GetObjectItemCaseSensitive(obj, "proxy_port");
-    bool proxy_valid = !proxy_host || (cJSON_IsString(proxy_host) && cJSON_IsNumber(proxy_port) &&
-        proxy_port->valuedouble >= 0 && proxy_port->valuedouble <= 65535 &&
-        proxy_port->valuedouble == proxy_port->valueint &&
-        passport_muse_proxy_valid(proxy_host->valuestring, (uint16_t)proxy_port->valueint));
-    esp_err_t err = proxy_valid ? ESP_OK : ESP_ERR_INVALID_ARG;
-    if (err == ESP_OK && token) err = cJSON_IsString(token) ? passport_muse_set_sdk_token(token->valuestring) : ESP_ERR_INVALID_ARG;
-    if (err == ESP_OK && proxy_host) err = passport_muse_set_proxy(proxy_host->valuestring, (uint16_t)proxy_port->valueint);
-    if (!token && !proxy_host) err = ESP_ERR_INVALID_ARG;
+    const cJSON *url = obj ? cJSON_GetObjectItemCaseSensitive(obj, "relay_url") : nullptr;
+    const cJSON *token = obj ? cJSON_GetObjectItemCaseSensitive(obj, "device_token") : nullptr;
+    const cJSON *proxy_host = obj ? cJSON_GetObjectItemCaseSensitive(obj, "proxy_host") : nullptr;
+    const cJSON *proxy_port = obj ? cJSON_GetObjectItemCaseSensitive(obj, "proxy_port") : nullptr;
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+    if (url && token && cJSON_IsString(url) && cJSON_IsString(token) &&
+        passport_workbuddy_valid_relay_url(url->valuestring) &&
+        passport_workbuddy_valid_token(token->valuestring)) {
+        const char *host = "";
+        uint16_t port = 0;
+        if (proxy_host && proxy_port && cJSON_IsString(proxy_host) && cJSON_IsNumber(proxy_port) &&
+            proxy_port->valuedouble >= 1 && proxy_port->valuedouble <= 65535 &&
+            proxy_port->valuedouble == proxy_port->valueint) {
+            host = proxy_host->valuestring;
+            port = (uint16_t)proxy_port->valueint;
+        } else if (proxy_host || proxy_port) {
+            err = ESP_ERR_INVALID_ARG;
+        }
+        if (err != ESP_ERR_INVALID_ARG) {
+            err = passport_workbuddy_configure(url->valuestring, token->valuestring, host, port);
+        }
+    }
     cJSON_Delete(obj);
     std::memset(body, 0, sizeof(body));
-    if (err == ESP_OK) return send_muse_config(req);
-    return send_json(req, 400, err == ESP_ERR_INVALID_STATE ? "{\"error\":\"muse_active\"}" : "{\"error\":\"muse_config\"}");
+    if (err == ESP_OK) return send_workbuddy_config(req);
+    return send_json(req, 400, "{\"error\":\"workbuddy_config\"}");
 }
 
 static esp_err_t handler_avatar_get(httpd_req_t *req) {
@@ -302,6 +340,60 @@ static esp_err_t handler_avatar_post(httpd_req_t *req) {
             ESP_LOGW(TAG, "Avatar store rejected: received=%u/%u err=%s",
                      (unsigned)(total - remaining), (unsigned)total, esp_err_to_name(err));
             return send_avatar_upload_error(req, "avatar_store", err);
+        }
+    }
+    return send_json(req, 200, "{\"ok\":true}");
+}
+
+static esp_err_t handler_avatar_color_get(httpd_req_t *req) {
+    if (!token_ok(req)) return send_json(req, 401, "{\"error\":\"unauthorized\"}");
+    auto *data = static_cast<uint8_t *>(std::malloc(HOME_AVATAR_COLOR_MAX_BYTES));
+    if (!data) return send_json(req, 400, "{\"error\":\"oom\"}");
+    size_t size = 0;
+    const esp_err_t loaded = home_profile_read_avatar_color(data, HOME_AVATAR_COLOR_MAX_BYTES, &size);
+    if (loaded != ESP_OK) {
+        std::free(data);
+        return send_json(req, 400, "{\"error\":\"avatar_color\"}");
+    }
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, max-age=0");
+    const esp_err_t sent = httpd_resp_send(req, reinterpret_cast<const char *>(data), size);
+    std::free(data);
+    return sent;
+}
+
+static esp_err_t handler_avatar_color_post(httpd_req_t *req) {
+    if (!token_ok(req)) return send_json(req, 401, "{\"error\":\"unauthorized\"}");
+    const size_t total = (size_t)req->content_len;
+    if (total == 0 || total > HOME_AVATAR_COLOR_MAX_BYTES) {
+        ESP_LOGW(TAG, "Color avatar invalid content-length %d", (int)req->content_len);
+        return send_avatar_upload_error(req, "avatar_color_size", ESP_ERR_INVALID_SIZE);
+    }
+    char chunk[512];
+    size_t remaining = total;
+    bool first = true;
+    const int64_t deadline = esp_timer_get_time() + 10000000;
+    while (remaining > 0) {
+        int n = esp_timer_get_time() < deadline
+            ? httpd_req_recv(req, chunk, remaining < sizeof(chunk) ? remaining : sizeof(chunk))
+            : HTTPD_SOCK_ERR_TIMEOUT;
+        if (n == HTTPD_SOCK_ERR_TIMEOUT && esp_timer_get_time() < deadline) continue;
+        if (n <= 0) {
+            home_profile_abort_avatar_color_upload();
+            ESP_LOGW(TAG, "Color avatar recv aborted: received=%u/%u socket=%d",
+                     (unsigned)(total - remaining), (unsigned)total, n);
+            return send_avatar_upload_error(req, "avatar_color_recv",
+                n == HTTPD_SOCK_ERR_TIMEOUT ? ESP_ERR_TIMEOUT : ESP_FAIL);
+        }
+        if ((size_t)n > remaining) n = (int)remaining;
+        remaining -= (size_t)n;
+        esp_err_t err = home_profile_write_avatar_color_chunk(
+            reinterpret_cast<const uint8_t *>(chunk), (size_t)n, first, remaining == 0);
+        first = false;
+        if (err != ESP_OK) {
+            home_profile_abort_avatar_color_upload();
+            ESP_LOGW(TAG, "Color avatar store rejected: err=%s", esp_err_to_name(err));
+            return send_avatar_upload_error(req, "avatar_color_store", err);
         }
     }
     return send_json(req, 200, "{\"ok\":true}");
@@ -560,7 +652,10 @@ esp_err_t home_upload_start(void) {
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 6144;
-    config.max_uri_handlers = 17;
+    // 必须 >= 下面 routes[] 的条数(当前 19 条:首页 + 各 API + captive 通配)。
+    // 超限时 httpd_register_uri_handler 返回 HANDLERS_FULL,代码会 httpd_stop 整个服务
+    // —— 表现为热点能连、浏览器却完全打不开。改路由时同步改这里。
+    config.max_uri_handlers = 20;
     // 10 lwIP sockets total: leave room for DNS, SNTP, control/listen sockets,
     // and a new accept before LRU eviction. Phone OS probes also use HTTP.
     config.max_open_sockets = 3;
@@ -582,6 +677,8 @@ esp_err_t home_upload_start(void) {
     const httpd_uri_t profile_post = {"/api/profile", HTTP_POST, handler_profile_post, NULL};
     const httpd_uri_t avatar_post = {"/api/avatar", HTTP_POST, handler_avatar_post, NULL};
     const httpd_uri_t avatar_get = {"/api/avatar", HTTP_GET, handler_avatar_get, NULL};
+    const httpd_uri_t avatar_color_post = {"/api/avatar_color", HTTP_POST, handler_avatar_color_post, NULL};
+    const httpd_uri_t avatar_color_get = {"/api/avatar_color", HTTP_GET, handler_avatar_color_get, NULL};
     const httpd_uri_t share_post = {"/api/share", HTTP_POST, handler_share_post, NULL};
     const httpd_uri_t share_get = {"/api/share", HTTP_GET, handler_share_get, NULL};
     const httpd_uri_t cards_get = {"/api/cards", HTTP_GET, handler_cards_get, NULL};
@@ -590,21 +687,25 @@ esp_err_t home_upload_start(void) {
     const httpd_uri_t networks_uri = {"/api/networks", HTTP_GET, handler_networks, NULL};
     const httpd_uri_t connect_uri = {"/api/connect", HTTP_POST, handler_connect, NULL};
     const httpd_uri_t finish_uri = {"/api/finish", HTTP_POST, handler_finish, NULL};
-    const httpd_uri_t muse_get = {"/api/muse", HTTP_GET, handler_muse_get, NULL};
-    const httpd_uri_t muse_post = {"/api/muse", HTTP_POST, handler_muse_post, NULL};
+    const httpd_uri_t workbuddy_get = {"/api/workbuddy", HTTP_GET, handler_workbuddy_get, NULL};
+    const httpd_uri_t workbuddy_post = {"/api/workbuddy", HTTP_POST, handler_workbuddy_post, NULL};
     const httpd_uri_t captive_uri = {"/*", HTTP_GET, handler_captive, NULL};
     // 2026-09-13 修复(B8):注册返回值必须检查。原来四个 handler 全丢返回值,
     // 注册失败时页面直接 404 且日志里一行痕迹都没有。
     struct { const httpd_uri_t *uri; const char *name; } routes[] = {
         {&index_uri, "/"}, {&cities_uri, "GET /api/cities"}, {&profile_get, "GET /api/profile"},
         {&profile_post, "POST /api/profile"}, {&avatar_post, "POST /api/avatar"}, {&avatar_get, "GET /api/avatar"},
+        {&avatar_color_post, "POST /api/avatar_color"}, {&avatar_color_get, "GET /api/avatar_color"},
         {&share_post, "POST /api/share"},
         {&share_get, "GET /api/share"}, {&cards_get, "GET /api/cards"}, {&cards_post, "POST /api/cards"},
         {&setup_uri, "GET /api/setup"}, {&networks_uri, "GET /api/networks"},
         {&connect_uri, "POST /api/connect"}, {&finish_uri, "POST /api/finish"},
-        {&muse_get, "GET /api/muse"}, {&muse_post, "POST /api/muse"},
+        {&workbuddy_get, "GET /api/workbuddy"}, {&workbuddy_post, "POST /api/workbuddy"},
         {&captive_uri, "captive portal"},
     };
+    // 路由条数一旦超过 max_uri_handlers,整个网页服务会被静默关掉。编译期就拦住。
+    static_assert(sizeof(routes) / sizeof(routes[0]) <= 20,
+                  "home_upload routes exceed max_uri_handlers");
     for (const auto &r : routes) {
         esp_err_t e = httpd_register_uri_handler(s_server, r.uri);
         if (e != ESP_OK) {
@@ -626,6 +727,7 @@ void home_upload_stop(void) {
     if (!s_server) return;
     httpd_stop(s_server); // 内部 join 处理器任务后释放
     home_profile_abort_avatar_upload();
+    home_profile_abort_avatar_color_upload();
     home_profile_abort_card_upload();
     s_server = NULL;
     while (s_network_state.load() == 1) vTaskDelay(pdMS_TO_TICKS(20));

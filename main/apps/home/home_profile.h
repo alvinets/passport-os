@@ -19,6 +19,14 @@ extern "C" {
 #define HOME_SHARE_MAX_IMAGES 6
 #define HOME_SHARE_STORAGE_RESERVE (64 * 1024)
 #define HOME_SHARE_PATH_MAX 96
+
+/* 首页人像显示模式。默认彩色照片;像素风保留为可选项。 */
+#define HOME_AVATAR_MODE_PIXEL 0
+#define HOME_AVATAR_MODE_PHOTO 1
+#define HOME_AVATAR_MODE_DEFAULT HOME_AVATAR_MODE_PHOTO
+#define HOME_AVATAR_COLOR_W 96
+#define HOME_AVATAR_COLOR_H 138
+#define HOME_AVATAR_COLOR_MAX_BYTES (12 * 1024)
 #define HOME_NAME_MAX 32      /* UTF-8 字节数,含结尾 0(约 9 个汉字) */
 #define HOME_SIGNATURE_MAX 96 /* UTF-8 字节数,含结尾 0(约 31 个汉字) */
 #define HOME_CITY_MAX 48      /* UTF-8 字节数,含结尾 0 */
@@ -59,6 +67,20 @@ uint32_t home_profile_version(void);
 esp_err_t home_profile_set_text(const home_profile_t *in);
 
 bool home_profile_has_avatar(void);
+
+// 首页人像显示模式(NVS 持久化,缺省彩色照片)。模式变化会递增资料版本,
+// 首页任务据此重新加载人像并刷新文字配色。
+uint8_t home_profile_avatar_mode(void);
+esp_err_t home_profile_set_avatar_mode(uint8_t mode);
+
+// 彩色人像:96×138 baseline JPEG,网页端压缩后流式落盘。写入采用 A/B 双备份,
+// 校验失败保留上一张。展示时由首页用 TJPGD 分块解码成 RGB565,不占全屏缓冲。
+bool home_profile_has_avatar_color(void);
+const char *home_profile_avatar_color_path(void);
+esp_err_t home_profile_read_avatar_color(uint8_t *dst, size_t cap, size_t *out_size);
+esp_err_t home_profile_write_avatar_color_chunk(const uint8_t *data, size_t len,
+                                                bool first, bool last);
+void home_profile_abort_avatar_color_upload(void);
 
 // 把 SPIFFS 里的头像读进 dst(需 HOME_AVATAR_BYTES 字节)。调用方不得持有
 // LVGL 锁(文件读取可达几十毫秒)。首次调用会挂载 storage 分区。

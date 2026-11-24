@@ -43,7 +43,7 @@ void app_registry_set_screen_timeout(uint16_t seconds);
 uint16_t app_registry_get_screen_timeout(void);
 bool app_registry_screen_is_on(void);
 // Screen off and the foreground app is not streaming (radio/music/voice/Xiaozhi/
-// Muse): background polling may slow down without anyone noticing.
+// WorkBuddy): background polling may slow down without anyone noticing.
 bool app_registry_background_idle(void);
 void app_registry_log_display_state(void);
 

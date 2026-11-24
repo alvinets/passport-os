@@ -24,7 +24,7 @@
 #include "device_control.h"
 #include "apps/lists/list_service.h"
 #include "esp_log.h"
-#include "passport_muse.h"
+#include "passport_workbuddy.h"
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
@@ -338,11 +338,9 @@ static void handle_serial_command(int c) {
     } else if (c == 't') {
         app_registry_switch_to(APP_ID_POMODORO);
     } else if (c == 'm') {
-        app_registry_switch_to(APP_ID_MUSE);
-    } else if (c == 'M') {
-        if (app_registry_get_active() == APP_ID_MUSE) passport_muse_diagnostic_ble_cycle();
+        app_registry_switch_to(APP_ID_WORKBUDDY);
     } else if (c == '?') {
-        passport_muse_log_diagnostics();
+        passport_workbuddy_log_diagnostics();
     } else if (c >= '1' && c <= '9') {
         int target_id = c - '0';
         ESP_LOGI(TAG, "[SerialCmd] Direct switch to App ID %d", target_id);
@@ -390,10 +388,13 @@ extern "C" void app_main(void) {
     }
 
     ESP_LOGI(TAG, "=== FoloToy AI Passport OS Starting ===");
+    // 三键是 ADC 分压输入而非 GPIO,ADC 不能作为 light sleep 唤醒源。开启自动
+    // 轻睡眠后,60 秒息屏释放 PM 锁 → 主控睡着 → 实体按键唤不醒、USB/JTAG 控制台
+    // 静默,现场表现与死机一致。保留 DFS(40-160MHz)节能,关闭自动轻睡眠。
     const esp_pm_config_t pm_config = { .max_freq_mhz = 160, .min_freq_mhz = 40,
-                                        .light_sleep_enable = true };
+                                        .light_sleep_enable = false };
     ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
-    ESP_LOGI(TAG, "Power management: DFS 40-160MHz, automatic light sleep enabled");
+    ESP_LOGI(TAG, "Power management: DFS 40-160MHz, light sleep disabled (ADC keys)");
 
     // 1. NVS 初始化
     esp_err_t ret = nvs_flash_init();

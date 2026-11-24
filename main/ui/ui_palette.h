@@ -12,6 +12,9 @@ typedef enum {
     UI_THEME_TRAVEL = 1,
     UI_THEME_PLAYFUL = 2,
     UI_THEME_NEON = 3,
+    // 彩色人像:浅底彩色首页(照片级人像 + 彩色文字)。像素风主题原样保留,
+    // 只是不再作为默认。追加在末尾以免已持久化的主题序号失效。
+    UI_THEME_PHOTO = 4,
     UI_THEME_COUNT,
 } ui_theme_t;
 

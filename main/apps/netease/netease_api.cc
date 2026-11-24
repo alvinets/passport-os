@@ -5,6 +5,7 @@
 #include "apps/netease/netease_json.h"
 #include "apps/netease/netease_lyrics.h"
 #include "esp_crt_bundle.h"
+#include "esp_idf_version.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -17,7 +18,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #endif
+// IDF 6.x ships mbedTLS 4, where the AES ECB API moved to an internal header.
+// Netease EAPI uses only AES-128-ECB with an explicit key, so keep the original
+// cipher path instead of migrating this unrelated feature to PSA mid-project.
+#if ESP_IDF_VERSION_MAJOR >= 6
+#define MBEDTLS_ALLOW_PRIVATE_ACCESS
+#include "mbedtls/private/aes.h"
+#else
 #include "mbedtls/aes.h"
+#endif
 
 #include <cinttypes>
 #include <cstdio>

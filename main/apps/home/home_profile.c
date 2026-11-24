@@ -18,6 +18,10 @@
 static const char *TAG = "home_profile";
 
 #define NVS_NAMESPACE "home_profile"
+
+// NVS 键名上限 15 字符,超长会以 ESP_ERR_NVS_KEY_TOO_LONG 整笔拒绝写入
+// (历史 bug:曾用 "portrait_photo_bank" 19 字符,彩色人像永远存不进去)。
+#define KEY_PHOTO_BANK "photo_bank"
 #ifndef SPIFFS_BASE
 #define SPIFFS_BASE "/storage"
 #endif
@@ -32,6 +36,14 @@ static int s_avatar_bank = -1;
 static FILE *s_avatar_stream;
 static size_t s_avatar_written, s_avatar_expected;
 static int s_avatar_upload_bank;
+static const char *const s_color_avatar_paths[] = {
+    SPIFFS_BASE "/portrait-photo-a.jpg", SPIFFS_BASE "/portrait-photo-b.jpg"
+};
+static bool s_color_avatar_loaded;
+static int s_color_avatar_bank = -1;
+static FILE *s_color_avatar_stream;
+static size_t s_color_avatar_written;
+static uint8_t s_avatar_mode = HOME_AVATAR_MODE_DEFAULT;
 #define SHARE_TMP_PATH SPIFFS_BASE "/share.tmp"
 #define SHARE_PATH SPIFFS_BASE "/share.jpg"
 #define SHARE_OLD_PATH SPIFFS_BASE "/share.bin"
@@ -78,12 +90,19 @@ bool home_profile_coordinates_valid(const char *lat, const char *lon) {
 void home_profile_init(void) {
     s_cards_loaded = false;
     s_avatar_loaded = false;
+    s_color_avatar_loaded = false;
+    s_color_avatar_bank = -1;
+    s_avatar_mode = HOME_AVATAR_MODE_DEFAULT;
     memset(&s_profile, 0, sizeof(s_profile));
     nvs_handle_t handle;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
         ESP_LOGI(TAG, "No profile stored yet, using empty profile");
         return;
     }
+    uint8_t mode = HOME_AVATAR_MODE_DEFAULT;
+    if (nvs_get_u8(handle, "avatar_mode", &mode) == ESP_OK &&
+        (mode == HOME_AVATAR_MODE_PIXEL || mode == HOME_AVATAR_MODE_PHOTO))
+        s_avatar_mode = mode;
     size_t len;
     len = sizeof(s_profile.name);
     nvs_get_str(handle, "name", s_profile.name, &len);
@@ -170,6 +189,28 @@ esp_err_t home_profile_set_text(const home_profile_t *in) {
     s_version++;
     portEXIT_CRITICAL(&s_mux);
     ESP_LOGI(TAG, "Profile updated: name='%s' city='%s'", in->name, in->city);
+    return ESP_OK;
+}
+
+uint8_t home_profile_avatar_mode(void) { return s_avatar_mode; }
+
+esp_err_t home_profile_set_avatar_mode(uint8_t mode) {
+    if (mode != HOME_AVATAR_MODE_PIXEL && mode != HOME_AVATAR_MODE_PHOTO)
+        return ESP_ERR_INVALID_ARG;
+    if (mode == s_avatar_mode) return ESP_OK;
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(h, "avatar_mode", mode);
+        if (err == ESP_OK) err = nvs_commit(h);
+        nvs_close(h);
+    }
+    if (err != ESP_OK) return err;
+    s_avatar_mode = mode;
+    portENTER_CRITICAL(&s_mux);
+    s_version++;
+    portEXIT_CRITICAL(&s_mux);
+    ESP_LOGI(TAG, "Avatar mode set to %u", (unsigned)mode);
     return ESP_OK;
 }
 
@@ -550,7 +591,8 @@ esp_err_t home_profile_gallery_get(home_share_gallery_t *out) {
 
 /* Check baseline JPEG geometry without allocating a compressed image buffer.
  * Decode errors still fail safely in the display's bounded TJPGD path. */
-static bool card_jpeg_valid(const char *path, size_t size) {
+static bool jpeg_geometry_valid(const char *path, size_t size,
+                                uint16_t width, uint16_t height) {
     FILE *fp = fopen(path, "rb"); if (!fp) return false;
     bool valid = false, baseline = false;
     if (size < 24 || fgetc(fp) != 0xff || fgetc(fp) != 0xd8) goto done;
@@ -566,9 +608,9 @@ static bool card_jpeg_valid(const char *path, size_t size) {
         if (marker == 0xc0) {
             unsigned char dimensions[6];
             if (len < 8 || fread(dimensions, 1, 6, fp) != 6) break;
-            baseline = dimensions[0] == 8 && dimensions[1] == (HOME_SHARE_H >> 8) &&
-                dimensions[2] == (HOME_SHARE_H & 255) && dimensions[3] == (HOME_SHARE_W >> 8) &&
-                dimensions[4] == (HOME_SHARE_W & 255) && (dimensions[5] == 1 || dimensions[5] == 3);
+            baseline = dimensions[0] == 8 && dimensions[1] == (height >> 8) &&
+                dimensions[2] == (height & 255) && dimensions[3] == (width >> 8) &&
+                dimensions[4] == (width & 255) && (dimensions[5] == 1 || dimensions[5] == 3);
             if (!baseline) break;
         } else if (marker >= 0xc1 && marker <= 0xcf && marker != 0xc4 && marker != 0xc8 && marker != 0xcc) break;
         if (marker == 0xda) {
@@ -580,6 +622,146 @@ static bool card_jpeg_valid(const char *path, size_t size) {
     }
 done:
     fclose(fp); return valid;
+}
+
+static bool card_jpeg_valid(const char *path, size_t size) {
+    return jpeg_geometry_valid(path, size, HOME_SHARE_W, HOME_SHARE_H);
+}
+
+static bool color_avatar_jpeg_valid(const char *path, size_t size) {
+    return jpeg_geometry_valid(path, size, HOME_AVATAR_COLOR_W, HOME_AVATAR_COLOR_H);
+}
+
+static esp_err_t color_avatar_load(void) {
+    esp_err_t err = ensure_spiffs();
+    if (err != ESP_OK || s_color_avatar_loaded) return err;
+    nvs_handle_t h;
+    char bank[2] = {0};
+    size_t n = sizeof(bank);
+    err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h);
+    if (err == ESP_OK) {
+        err = nvs_get_str(h, KEY_PHOTO_BANK, bank, &n);
+        nvs_close(h);
+    }
+    if (err == ESP_ERR_NOT_FOUND || err == ESP_ERR_NVS_NOT_FOUND) s_color_avatar_bank = -1;
+    else if (err != ESP_OK) return err;
+    else if ((bank[0] != 'a' && bank[0] != 'b') || bank[1]) return ESP_ERR_INVALID_STATE;
+    else s_color_avatar_bank = bank[0] - 'a';
+    s_color_avatar_loaded = true;
+    return ESP_OK;
+}
+
+static const char *color_avatar_path(void) {
+    return s_color_avatar_bank < 0 ? s_color_avatar_paths[0]
+                                   : s_color_avatar_paths[s_color_avatar_bank];
+}
+
+bool home_profile_has_avatar_color(void) {
+    if (storage_busy() || color_avatar_load() != ESP_OK) return false;
+    struct stat st;
+    return s_color_avatar_bank >= 0 &&
+        stat(color_avatar_path(), &st) == 0 && st.st_size > 0 &&
+        st.st_size <= HOME_AVATAR_COLOR_MAX_BYTES &&
+        color_avatar_jpeg_valid(color_avatar_path(), (size_t)st.st_size);
+}
+
+const char *home_profile_avatar_color_path(void) {
+    return color_avatar_path();
+}
+
+esp_err_t home_profile_read_avatar_color(uint8_t *dst, size_t cap, size_t *out_size) {
+    if (!dst || !out_size) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = color_avatar_load();
+    if (err != ESP_OK) return err;
+    struct stat st;
+    if (s_color_avatar_bank < 0 || stat(color_avatar_path(), &st) != 0)
+        return ESP_ERR_NOT_FOUND;
+    if (st.st_size <= 0 || (size_t)st.st_size > cap ||
+        (size_t)st.st_size > HOME_AVATAR_COLOR_MAX_BYTES)
+        return ESP_ERR_INVALID_SIZE;
+    FILE *fp = fopen(color_avatar_path(), "rb");
+    if (!fp) return ESP_ERR_NOT_FOUND;
+    const size_t got = fread(dst, 1, (size_t)st.st_size, fp);
+    fclose(fp);
+    if (got != (size_t)st.st_size) return ESP_FAIL;
+    *out_size = got;
+    return ESP_OK;
+}
+
+void home_profile_abort_avatar_color_upload(void) {
+    if (s_color_avatar_stream) {
+        fclose(s_color_avatar_stream);
+        s_color_avatar_stream = NULL;
+        if (s_color_avatar_bank == 0 || s_color_avatar_bank == 1)
+            remove(s_color_avatar_paths[s_color_avatar_bank]);
+    }
+}
+
+esp_err_t home_profile_write_avatar_color_chunk(const uint8_t *data, size_t len,
+                                                bool first, bool last) {
+    if ((!data && len) || len > HOME_AVATAR_COLOR_MAX_BYTES)
+        return ESP_ERR_INVALID_ARG;
+    esp_err_t err = ensure_spiffs();
+    if (err != ESP_OK) return err;
+    err = color_avatar_load();
+    if (err != ESP_OK) return err;
+    if (first) {
+        home_profile_abort_avatar_color_upload();
+        size_t total = 0, used = 0;
+        if (esp_spiffs_info("storage", &total, &used) == ESP_OK && total > used &&
+            total - used < HOME_SHARE_STORAGE_RESERVE + HOME_AVATAR_COLOR_MAX_BYTES)
+            return ESP_ERR_NO_MEM;
+        s_color_avatar_bank = s_color_avatar_bank == 0 ? 1 : 0;
+        s_color_avatar_written = 0;
+        s_color_avatar_stream = fopen(s_color_avatar_paths[s_color_avatar_bank], "wb");
+        if (!s_color_avatar_stream) return ESP_FAIL;
+    }
+    if (!s_color_avatar_stream) return ESP_ERR_INVALID_STATE;
+    if (s_color_avatar_written + len > HOME_AVATAR_COLOR_MAX_BYTES) {
+        home_profile_abort_avatar_color_upload();
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (len && fwrite(data, 1, len, s_color_avatar_stream) != len) {
+        const int saved = errno;
+        home_profile_abort_avatar_color_upload();
+        errno = saved;
+        return ESP_FAIL;
+    }
+    s_color_avatar_written += len;
+    if (!last) return ESP_OK;
+    if (s_color_avatar_written == 0) {
+        home_profile_abort_avatar_color_upload();
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (fclose(s_color_avatar_stream) != 0) {
+        s_color_avatar_stream = NULL;
+        remove(s_color_avatar_paths[s_color_avatar_bank]);
+        return ESP_FAIL;
+    }
+    s_color_avatar_stream = NULL;
+    if (!color_avatar_jpeg_valid(s_color_avatar_paths[s_color_avatar_bank],
+                                 s_color_avatar_written)) {
+        remove(s_color_avatar_paths[s_color_avatar_bank]);
+        return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t h;
+    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        char bank[] = {(char)('a' + s_color_avatar_bank), 0};
+        err = nvs_set_str(h, KEY_PHOTO_BANK, bank);
+        if (err == ESP_OK) err = nvs_commit(h);
+        nvs_close(h);
+    }
+    if (err != ESP_OK) {
+        remove(s_color_avatar_paths[s_color_avatar_bank]);
+        return err;
+    }
+    portENTER_CRITICAL(&s_mux);
+    s_version++;
+    portEXIT_CRITICAL(&s_mux);
+    ESP_LOGI(TAG, "Color avatar stored: %u bytes, bank %d",
+             (unsigned)s_color_avatar_written, s_color_avatar_bank);
+    return ESP_OK;
 }
 
 void home_profile_abort_card_upload(void) {

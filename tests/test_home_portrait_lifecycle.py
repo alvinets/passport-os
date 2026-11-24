@@ -19,9 +19,12 @@ prelude = r'''
 #define HOME_PORTRAIT_PIXELS 14400
 #define HOME_PORTRAIT_I4_BYTES 7264
 #define HOME_PORTRAIT_W 120
+#define HOME_AVATAR_MODE_PHOTO 1
 #define LV_COLOR_FORMAT_A8 1
 #define LV_COLOR_FORMAT_I4 2
+#define LV_COLOR_FORMAT_RGB565 3
 #define LV_OBJ_FLAG_HIDDEN 1
+#define LV_OPA_TRANSP 0
 #define ESP_OK 0
 #define ESP_FAIL -1
 #define ESP_ERR_NOT_FOUND -2
@@ -29,7 +32,12 @@ prelude = r'''
 #define ESP_LOGW(...) ((void)0)
 using esp_err_t=int;
 static uint8_t *s_portrait_packed,*s_portrait_pixels;
-static struct {struct {int cf,stride;}header;size_t data_size;const void *data;}s_portrait_dsc;
+static struct {struct {int cf,stride;}header;size_t data_size;const void *data;}s_portrait_dsc,s_photo_dsc;
+static uint8_t *s_photo_pixels;
+static bool s_photo_ready;
+static int avatar_mode;
+static int home_profile_avatar_mode(){return avatar_mode;}
+static bool home_photo_mode_active(){return avatar_mode==HOME_AVATAR_MODE_PHOTO;}
 static int image,placeholder;
 static void *s_avatar_img=&image,*s_portrait_ph=&placeholder;
 static const void *displayed;
@@ -42,6 +50,7 @@ static int home_profile_read_avatar(uint8_t*p,size_t n){assert(n==4976);if(fail_
 static void lv_image_set_src(void*,const void*p){displayed=p;}
 static void lv_image_cache_drop(const void*){}
 static void lv_obj_set_style_image_recolor(void*,int,int){}
+static void lv_obj_set_style_image_recolor_opa(void*,int,int){}
 static int lv_color_hex(int v){return v;}
 static int ui_theme_portrait_color(int v){return v;}
 static void lv_obj_clear_flag(void*p,int){if(p==s_avatar_img)hidden=false;}
@@ -62,7 +71,15 @@ int main(){
  fail_read=true;apply_avatar(read_portrait(true)==ESP_OK);assert(hidden&&!displayed);
  cleanup();assert(!s_portrait_pixels&&!s_portrait_packed&&!s_portrait_dsc.data&&live.empty());
  cleanup();fail_read=false;version=1;assert(read_portrait(true)==ESP_OK);apply_avatar(true);
- lv_image_set_src(s_avatar_img,nullptr);cleanup();assert(live.empty());
+ // Color-photo mode takes priority while the decoded RGB565 buffer is valid.
+ s_photo_pixels=(uint8_t*)allocate(HOME_PORTRAIT_PIXELS*2);s_photo_dsc.data=s_photo_pixels;
+ s_photo_ready=true;avatar_mode=HOME_AVATAR_MODE_PHOTO;apply_avatar(true);
+ assert(displayed==&s_photo_dsc&&!hidden);
+ avatar_mode=0;apply_avatar(true);assert(displayed==&s_portrait_dsc);
+ s_photo_ready=false;avatar_mode=HOME_AVATAR_MODE_PHOTO;apply_avatar(true);
+ assert(displayed==&s_portrait_dsc,'photo mode must fall back to pixel avatar');
+ lv_image_set_src(s_avatar_img,nullptr);cleanup();
+ assert(!s_photo_pixels&&!s_photo_dsc.data&&!s_photo_ready&&live.empty());
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:

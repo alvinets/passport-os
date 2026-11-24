@@ -13,6 +13,7 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "esp_idf_version.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -55,7 +56,12 @@ void wake_pin_input() {
     gpio_hold_en((gpio_num_t)BSP_LCD_BL);
     gpio_deep_sleep_hold_en();
     wake_pin_input();
+#if ESP_IDF_VERSION_MAJOR >= 6
+    gpio_wakeup_enable(kWakePin, GPIO_INTR_LOW_LEVEL);
+    esp_sleep_enable_gpio_wakeup();
+#else
     esp_deep_sleep_enable_gpio_wakeup(1ULL << kWakePin, ESP_GPIO_WAKEUP_GPIO_LOW);
+#endif
     esp_deep_sleep_start();
 }
 

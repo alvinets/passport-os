@@ -39,7 +39,7 @@ if [ "${1:-}" = "release" ]; then
     cp -- sdkconfig.defaults build-public/sdkconfig
     idf.py -B build-public -DSDKCONFIG="$PROJECT_DIR/build-public/sdkconfig" \
         -DIDF_TARGET=esp32c3 -DPASSPORT_PUBLIC_RELEASE=ON \
-        -DPASSPORT_MUSE_USE_JOLLYBOT=ON build \
+        -DPASSPORT_WORKBUDDY_USE_JOLLYBOT=OFF build \
         merge-bin -o FoloToy-AI-Passport-full.bin
     python tools/verify_firmware.py build-public --public
     exit 0
@@ -50,7 +50,7 @@ if [ "${1:-}" = "diag" ]; then
     cat -- sdkconfig.defaults sdkconfig.diag > build-diag/sdkconfig
     idf.py -B build-diag -DSDKCONFIG="$PROJECT_DIR/build-diag/sdkconfig" \
         -DIDF_TARGET=esp32c3 -DPASSPORT_PUBLIC_RELEASE=OFF \
-        -DPASSPORT_MUSE_USE_JOLLYBOT=ON build
+        -DPASSPORT_WORKBUDDY_USE_JOLLYBOT=OFF build
     exit 0
 fi
 
@@ -67,4 +67,4 @@ mkdir -p build
 cp -- sdkconfig.defaults build/sdkconfig
 idf.py -B build -DSDKCONFIG="$PROJECT_DIR/build/sdkconfig" \
     -DIDF_TARGET=esp32c3 -DPASSPORT_PUBLIC_RELEASE=OFF \
-    -DPASSPORT_MUSE_USE_JOLLYBOT=ON build
+    -DPASSPORT_WORKBUDDY_USE_JOLLYBOT=OFF build

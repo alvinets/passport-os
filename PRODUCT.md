@@ -12,20 +12,20 @@ The owner and people using the same AI Passport hardware use its physical button
 
 ## Operating context
 
-The device has three physical buttons. Existing Wi-Fi and personal information are configured through a phone web page. Muse pairs with the owner's phone account; this owner's current network uses a computer HTTP proxy. Hold UP to record, release to send, OK pages a received reply, long OK returns. Muse and desktop voice-input are different apps.
+The device has three physical buttons. Existing Wi-Fi and personal information are configured through a phone web page. WorkBuddy uses a server-side relay with OAuth credentials; this owner's current network uses a computer HTTP proxy. Hold UP to record, release to send, OK pages a received reply, long OK returns. WorkBuddy and desktop voice-input are different apps.
 
 ## Capabilities and constraints
 
 - ESP32-C3, 8 MB Flash, no PSRAM; preserve memory for Wi-Fi, encrypted connections and recording.
 - App switching must release foreground resources. No black "returning" screens.
-- Two consecutive Muse hardware reply displays were confirmed by the owner before this visual update. Long-term stability is not established by that short test.
-- No supported Muse quota interface was found in the reviewed public SDK documentation. User explicitly requested removing quota from the UI.
+- Two consecutive assistant hardware reply displays were confirmed by the owner before this visual update. Long-term stability is not established by that short test.
+- No supported quota interface is exposed by the WorkBuddy device protocol. The UI omits quota.
 - Default system theme is classic green; keep the alternative travel theme and existing button semantics.
 
-## Muse visual commitment
+## Assistant visual commitment
 
-On 2026-10-05 the user requested the displayed official Jollybot character as the Muse app's main visual, complete state motion/transitions, and explicit attention to memory stability. This is a scoped Muse app update. Official character assets have separate rights from SDK code; no public distribution is implied by the local hardware request.
+On 2026-10-05 the user requested the displayed official Jollybot character as the Muse app's main visual, complete state motion/transitions, and explicit attention to memory stability. This is a scoped assistant app update. Official character assets have separate rights from SDK code; no public distribution is implied by the local hardware request.
 
 ## Evidence
 
-Current firmware source, `DESIGN.md`, `docs/muse.md`, `docs/muse-visual.md`, and local diagnostics in the parent workspace document implementation and validation. Browser simulations, host LVGL snapshots and physical-device tests must be labelled separately.
+Current firmware source, `DESIGN.md`, `docs/workbuddy-adapter.md`, and local diagnostics in the parent workspace document implementation and validation. Browser simulations, host LVGL snapshots and physical-device tests must be labelled separately.
